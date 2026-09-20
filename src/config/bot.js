@@ -11,7 +11,7 @@ export const botConfig = {
   // - "invisible" = appears offline
   presence: {
     // Current online state shown on Discord.
-    status: "idle",
+    status: "dnd",
 
     // Activity lines shown under the bot name.
     // `type` number mapping from Discord:
@@ -23,9 +23,9 @@ export const botConfig = {
     // 5 = Competing
     activities: [
       {
-        name: "usersoar is dadaa", // required by Discord API, not shown in the client
-        state: "NOOOOOOO",     // this is what people actually see
-        type: 3,               // Custom
+        name: "Roblox", // required by Discord API, not shown in the client
+        state: "Roblox",     // this is what people actually see
+        type: 0,               // Custom
       },
     ],
   },
@@ -61,7 +61,7 @@ export const botConfig = {
   applications: {
     // Default questions shown when someone fills out an application.
     defaultQuestions: [
-      { question: "What is your name?", required: true },
+      { question: "What is your discord username?", required: true },
       { question: "How old are you?", required: true },
       { question: "Why do you want to join?", required: true },
     ],
