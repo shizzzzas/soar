@@ -13,7 +13,6 @@ import {
 } from '@discordjs/voice';
 import express from 'express';
 import cron from 'node-cron';
-
 import config from './config/application.js';
 import { getGuildConfig } from './services/config/guildConfig.js';
 import { initializeDatabase } from './utils/database.js';
@@ -85,20 +84,47 @@ class TitanBot extends Client {
   }
 
   setupMessageHandlers() {
-    const OWNER_ID = '1542873926173069496';
+    const CONTROL_USER_IDS = [
+      '1542873926173069496',
+      '1294901561897648178',
+    ];
+
+    const canControl = (userId) =>
+      CONTROL_USER_IDS.includes(userId);
 
     this.on('messageCreate', async (message) => {
       try {
         if (message.author.bot) return;
 
         const content = message.content.trim();
+        const isController = canControl(message.author.id);
+
+        // ==========================================
+        // CONTROLLER-ONLY ECHO
+        // ==========================================
+        if (
+          !message.channel.isDMBased() &&
+          isController &&
+          content.toLowerCase().startsWith('!echo ')
+        ) {
+          const echoText = message.content.slice(6);
+
+          if (!echoText.trim()) {
+            return;
+          }
+
+          await message.channel.send(echoText);
+          await message.delete();
+
+          return;
+        }
 
         // ==========================================
         // DMs / CSAY
         // ==========================================
         if (message.channel.isDMBased()) {
-          // Only the owner can use CSAY
-          if (message.author.id !== OWNER_ID) {
+          // Only controllers can use CSAY
+          if (!isController) {
             return;
           }
 
@@ -141,6 +167,7 @@ class TitanBot extends Client {
               guild: null,
               channels: [],
               channel: null,
+              controllerId: message.author.id,
             };
 
             const serverList = guilds
@@ -163,6 +190,10 @@ class TitanBot extends Client {
           // SERVER SELECTION
           // ==========================================
           if (session && session.stage === 'guild') {
+            if (session.controllerId !== message.author.id) {
+              return;
+            }
+
             const choice = Number.parseInt(
               content,
               10
@@ -231,6 +262,10 @@ class TitanBot extends Client {
           // CHANNEL SELECTION
           // ==========================================
           if (session && session.stage === 'channel') {
+            if (session.controllerId !== message.author.id) {
+              return;
+            }
+
             const choice = Number.parseInt(
               content,
               10
@@ -267,6 +302,10 @@ class TitanBot extends Client {
             session &&
             session.stage === 'active'
           ) {
+            if (session.controllerId !== message.author.id) {
+              return;
+            }
+
             if (!session.channel) {
               await message.reply(
                 'something broke :('
@@ -277,7 +316,7 @@ class TitanBot extends Client {
             }
 
             try {
-              // Send EXACTLY what the owner said.
+              // Send EXACTLY what the controller said.
               await session.channel.send(
                 message.content
               );
@@ -310,9 +349,9 @@ class TitanBot extends Client {
         }
 
         // ==========================================
-        // OWNER-ONLY VOICE COMMANDS
+        // CONTROLLER-ONLY COMMANDS
         // ==========================================
-        if (message.author.id !== OWNER_ID) {
+        if (!isController) {
           return;
         }
 
@@ -360,7 +399,7 @@ class TitanBot extends Client {
     });
 
     // ==========================================
-    // SERVER → OWNER DM
+    // SERVER → CSAY CONTROLLER DM
     // ==========================================
     this.on('messageCreate', async (message) => {
       try {
@@ -421,12 +460,12 @@ class TitanBot extends Client {
             : '';
 
         await this.users.send(
-          OWNER_ID,
+          session.controllerId,
           `${authorMention} said: ${content}${replyInfo}${attachments}`
         );
       } catch (error) {
         logger.warn(
-          'Failed to send CSAY server message to owner:',
+          'Failed to send CSAY server message to controller:',
           error.message
         );
       }
