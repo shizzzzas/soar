@@ -1,4 +1,4 @@
-```js
+js
 import 'dotenv/config';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
@@ -312,4 +312,4 @@ class TitanBot extends Client {
               validCounters.push(counter);
               await updateCounter(this, guild, counter);
             } else {
-```
+
