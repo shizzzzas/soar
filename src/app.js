@@ -1,4 +1,4 @@
-```js
+js
 import 'dotenv/config';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
@@ -439,4 +439,4 @@ try {
 }
 
 export default TitanBot;
-```
+
