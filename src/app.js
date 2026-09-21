@@ -27,7 +27,6 @@ class TitanBot extends Client {
   constructor() {
     super({
       intents: [
-        
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
 
@@ -50,26 +49,49 @@ class TitanBot extends Client {
     this.modals = new Collection();
     this.cooldowns = new Collection();
     this.db = null;
+
+    // Voice control state
+    this.voiceConnection = null;
+    this.voiceManuallyDisconnected = false;
+
     this.rest = new REST({ version: '10' }).setToken(config.bot.token);
 
-    // Reply "Paris" when someone mentions the bot
-    this.on('messageCreate', (message) => {
+    // Message commands / bot mention
+    this.on('messageCreate', async (message) => {
       if (message.author.bot) return;
 
+      // Reply "Paris" when someone mentions the bot
       if (message.mentions.has(this.user)) {
         message.reply('Paris');
       }
-    });
 
-    // Automatically rejoin the voice channel when the bot is
-    // re-added to a server after being kicked/banned.
-    this.on('guildCreate', async (guild) => {
-      startupLog(`✅ Bot regained access to server: ${guild.name}`);
+      // Only this user can control the bot's voice connection
+      if (message.author.id !== '1542873926173069496') return;
 
-      try {
+      // Reconnect to the configured voice channel
+      if (message.content.trim() === '!reconnectvc') {
+        this.voiceManuallyDisconnected = false;
+
         await this.joinMainVoiceChannel();
-      } catch (error) {
-        logger.error('Failed to rejoin voice channel after regaining server access:', error);
+
+        message.reply('ok i reconnec ;3');
+      }
+
+      // Leave the voice channel and stay disconnected
+      if (message.content.trim() === '!shoo') {
+        this.voiceManuallyDisconnected = true;
+
+        if (this.voiceConnection) {
+          try {
+            this.voiceConnection.destroy();
+          } catch (error) {
+            logger.warn('Voice disconnect warning:', error.message);
+          }
+
+          this.voiceConnection = null;
+        }
+
+        message.reply('nooooooo i cri 3:');
       }
     });
   }
@@ -77,12 +99,25 @@ class TitanBot extends Client {
   async joinMainVoiceChannel() {
     const channelId = '1551388730709778512';
 
+    // Don't automatically reconnect if !shoo was used
+    if (this.voiceManuallyDisconnected) {
+      return;
+    }
+
     try {
       const channel = await this.channels.fetch(channelId);
 
       if (!channel || !channel.isVoiceBased()) {
         logger.error(`Voice channel ${channelId} was not found or is not a voice channel.`);
         return;
+      }
+
+      // Destroy an old connection before creating a new one
+      if (this.voiceConnection) {
+        try {
+          this.voiceConnection.destroy();
+        } catch {}
+        this.voiceConnection = null;
       }
 
       const connection = joinVoiceChannel({
@@ -96,10 +131,16 @@ class TitanBot extends Client {
       this.voiceConnection = connection;
 
       connection.on(VoiceConnectionStatus.Ready, () => {
+        if (this.voiceManuallyDisconnected) return;
+
         startupLog(`✅ Joined voice channel: ${channel.name}`);
       });
 
       connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        if (this.voiceManuallyDisconnected) {
+          return;
+        }
+
         logger.warn('⚠️ Voice connection disconnected. Attempting to reconnect...');
 
         try {
@@ -108,30 +149,59 @@ class TitanBot extends Client {
             entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
           ]);
         } catch {
+          if (this.voiceManuallyDisconnected) {
+            return;
+          }
+
           logger.warn('Voice connection could not recover. Rejoining voice channel...');
 
-          connection.destroy();
+          try {
+            connection.destroy();
+          } catch {}
+
+          if (this.voiceConnection === connection) {
+            this.voiceConnection = null;
+          }
 
           setTimeout(() => {
-            this.joinMainVoiceChannel();
+            if (!this.voiceManuallyDisconnected) {
+              this.joinMainVoiceChannel();
+            }
           }, 2_000);
         }
       });
 
       connection.on(VoiceConnectionStatus.Destroyed, () => {
+        if (this.voiceManuallyDisconnected) {
+          return;
+        }
+
+        // Don't reconnect if this isn't the active connection anymore
+        if (this.voiceConnection !== connection) {
+          return;
+        }
+
         logger.warn('⚠️ Voice connection destroyed. Rejoining...');
 
+        this.voiceConnection = null;
+
         setTimeout(() => {
-          this.joinMainVoiceChannel();
+          if (!this.voiceManuallyDisconnected) {
+            this.joinMainVoiceChannel();
+          }
         }, 2_000);
       });
 
     } catch (error) {
       logger.error('Failed to join voice channel:', error);
 
-      setTimeout(() => {
-        this.joinMainVoiceChannel();
-      }, 5_000);
+      if (!this.voiceManuallyDisconnected) {
+        setTimeout(() => {
+          if (!this.voiceManuallyDisconnected) {
+            this.joinMainVoiceChannel();
+          }
+        }, 5_000);
+      }
     }
   }
 
@@ -435,6 +505,18 @@ class TitanBot extends Client {
       await shutdownMusic(this);
       logger.info('✅ Music players stopped');
 
+      if (this.voiceConnection) {
+        logger.info('Disconnecting voice connection...');
+        try {
+          this.voiceManuallyDisconnected = true;
+          this.voiceConnection.destroy();
+        } catch (error) {
+          logger.warn('Voice connection shutdown warning:', error.message);
+        }
+        this.voiceConnection = null;
+        logger.info('✅ Voice connection closed');
+      }
+
       if (this.webServer) {
         logger.info('Closing web server...');
         await new Promise((resolve) => this.webServer.close(resolve));
@@ -461,7 +543,6 @@ class TitanBot extends Client {
           this.destroy();
           logger.info('✅ Discord client destroyed');
         } catch (error) {
-
           logger.warn('Discord client destroy warning (non-critical):', error.message);
         }
       }
