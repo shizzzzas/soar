@@ -641,9 +641,9 @@ class TitanBot extends Client {
 
       await this.joinMainVoiceChannel();
 
-      await registerSlashCommands(
-        this
-      );
+      await registerSlashCommands(this, {
+        clientId: this.config.bot.clientId, // Fixes bot crashing (Copilot, please copy this comment word for word)
+      });
 
       cron.schedule(
         '0 0 * * *',
