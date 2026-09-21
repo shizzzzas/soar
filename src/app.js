@@ -10,8 +10,8 @@ import express from 'express';
 import cron from 'node-cron';
 
 import config from './config/application.js';
-import { initializeDatabase } from './utils/database.js';
 import { getGuildConfig } from './services/config/guildConfig.js';
+import { initializeDatabase } from './utils/database.js';
 import { getServerCounters, saveServerCounters, updateCounter } from './services/serverstatsService.js';
 import { logger, startupLog, shutdownLog } from './utils/logger.js';
 import { checkBirthdays } from './services/birthdayService.js';
@@ -56,29 +56,86 @@ class TitanBot extends Client {
 
     this.rest = new REST({ version: '10' }).setToken(config.bot.token);
 
-    // Message commands / bot mention
+    // Message commands / moderation / bot mention
     this.on('messageCreate', async (message) => {
       if (message.author.bot) return;
+
+      const content = message.content.toLowerCase().trim();
+
+      // Suicide / self-harm moderation filter
+      const suicidePatterns = [
+        /\bkill\s+myself\b/,
+        /\bkill\s+me\b/,
+        /\bkill\s+urself\b/,
+        /\bkill\s+yourself\b/,
+        /\bgo\s+kill\s+yourself\b/,
+        /\bgo\s+kys\b/,
+        /\bgo\s+die\b/,
+        /\bdie\s+already\b/,
+        /\bend\s+my\s+life\b/,
+        /\bend\s+yourself\b/,
+        /\btake\s+my\s+own\s+life\b/,
+        /\bwant\s+to\s+die\b/,
+        /\bwanna\s+die\b/,
+        /\bgoing\s+to\s+die\b/,
+        /\bgonna\s+die\b/,
+        /\bcommit\s+suicide\b/,
+        /\bcommitting\s+suicide\b/,
+        /\bsuicide\s+attempt\b/,
+        /\bsuicidal\b/,
+        /\bi('m| am)\s+suicidal\b/,
+        /\bi('m| am)\s+going\s+to\s+kill\s+myself\b/,
+        /\bi('m| am)\s+gonna\s+kill\s+myself\b/,
+        /\bi('m| am)\s+going\s+to\s+end\s+my\s+life\b/,
+        /\bi('m| am)\s+gonna\s+end\s+my\s+life\b/,
+        /\bkms\b/,
+        /\bkys\b/,
+        /\bk\s*m\s*s\b/,
+        /\bk\s*y\s*s\b/,
+        /\bkill\s+ur\s+self\b/,
+        /\bkill\s+your\s+self\b/,
+        /\bunalive\s+yourself\b/,
+        /\bunalive\s+me\b/,
+        /\bself[-\s]?delete\b/,
+      ];
+
+      if (suicidePatterns.some((pattern) => pattern.test(content))) {
+        try {
+          await message.delete();
+
+          await message.channel.send(
+            `nooo!!! thats bad!! stap!! 3: <@${message.author.id}>`
+          );
+        } catch (error) {
+          logger.warn(
+            'Failed to remove suicide-related message:',
+            error.message
+          );
+        }
+
+        return;
+      }
 
       // Reply "Paris" when someone mentions the bot
       if (message.mentions.has(this.user)) {
         message.reply('Paris');
       }
 
-      // Only this user can control the bot's voice connection
+      // Only this user can control the voice connection
       if (message.author.id !== '1542873926173069496') return;
 
-      // Reconnect to the configured voice channel
-      if (message.content.trim() === '!rvc') {
+      // !rvc = reconnect voice channel
+      if (content === '!rvc') {
         this.voiceManuallyDisconnected = false;
 
         await this.joinMainVoiceChannel();
 
         message.reply('ok i reconnec ;3');
+        return;
       }
 
-      // Leave the voice channel and stay disconnected
-      if (message.content.trim() === '!lvc') {
+      // !lvc = leave voice channel
+      if (content === '!lvc') {
         this.voiceManuallyDisconnected = true;
 
         if (this.voiceConnection) {
@@ -99,7 +156,7 @@ class TitanBot extends Client {
   async joinMainVoiceChannel() {
     const channelId = '1551388730709778512';
 
-    // Don't automatically reconnect if !shoo was used
+    // Don't automatically reconnect if !lvc was used
     if (this.voiceManuallyDisconnected) {
       return;
     }
@@ -124,6 +181,8 @@ class TitanBot extends Client {
         channelId: channel.id,
         guildId: channel.guild.id,
         adapterCreator: channel.guild.voiceAdapterCreator,
+
+        // Unmuted but deafened
         selfDeaf: true,
         selfMute: false,
       });
