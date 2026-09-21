@@ -28,17 +28,17 @@ class TitanBot extends Client {
     super({
       intents: [
         
-        GatewayIntentBits.Guilds,                        
-        GatewayIntentBits.GuildMembers,                 
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
 
-        GatewayIntentBits.GuildMessages,                
-        GatewayIntentBits.GuildMessageReactions,        
-        GatewayIntentBits.MessageContent,               
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
 
-        GatewayIntentBits.GuildVoiceStates,             
+        GatewayIntentBits.GuildVoiceStates,
 
-        GatewayIntentBits.GuildBans,                    
+        GatewayIntentBits.GuildBans,
       ],
     });
 
@@ -58,6 +58,18 @@ class TitanBot extends Client {
 
       if (message.mentions.has(this.user)) {
         message.reply('Paris');
+      }
+    });
+
+    // Automatically rejoin the voice channel when the bot is
+    // re-added to a server after being kicked/banned.
+    this.on('guildCreate', async (guild) => {
+      startupLog(`✅ Bot regained access to server: ${guild.name}`);
+
+      try {
+        await this.joinMainVoiceChannel();
+      } catch (error) {
+        logger.error('Failed to rejoin voice channel after regaining server access:', error);
       }
     });
   }
