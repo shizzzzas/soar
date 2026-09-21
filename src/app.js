@@ -125,7 +125,7 @@ class TitanBot extends Client {
         guildId: channel.guild.id,
         adapterCreator: channel.guild.voiceAdapterCreator,
         selfDeaf: true,
-        selfMute: true,
+        selfMute: false,
       });
 
       this.voiceConnection = connection;
