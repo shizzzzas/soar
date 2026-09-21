@@ -4,6 +4,7 @@ import {
   Collection,
   GatewayIntentBits,
   Partials,
+  EmbedBuilder,
 } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import {
@@ -78,6 +79,9 @@ class TitanBot extends Client {
     // CSAY state
     this.csaySession = null;
 
+    // Temporary ban timers
+    this.temporaryBans = new Map();
+
     this.rest = new REST({ version: '10' }).setToken(
       config.bot.token
     );
@@ -92,391 +96,903 @@ class TitanBot extends Client {
     const canControl = (userId) =>
       CONTROL_USER_IDS.includes(userId);
 
-    this.on('messageCreate', async (message) => {
-      try {
-        if (message.author.bot) return;
+    const MOD_EMBED_COLOR = 0x00008B;
 
-        const content = message.content.trim();
-        const isController = canControl(message.author.id);
+    const parseDuration = (input) => {
+      const match = /^(\d+)(s|m|h|d|w)$/i.exec(
+        input
+      );
 
-        // ==========================================
-        // CONTROLLER-ONLY ECHO
-        // ==========================================
-        if (
-          !message.channel.isDMBased() &&
-          isController &&
-          content.toLowerCase().startsWith('!echo ')
-        ) {
-          const echoText = message.content.slice(6);
+      if (!match) return null;
 
-          if (!echoText.trim()) {
+      const amount = Number(match[1]);
+      const unit = match[2].toLowerCase();
+
+      const multipliers = {
+        s: 1000,
+        m: 60 * 1000,
+        h: 60 * 60 * 1000,
+        d: 24 * 60 * 60 * 1000,
+        w: 7 * 24 * 60 * 60 * 1000,
+      };
+
+      const duration =
+        amount * multipliers[unit];
+
+      if (
+        !Number.isFinite(duration) ||
+        duration <= 0
+      ) {
+        return null;
+      }
+
+      // setTimeout cannot safely handle values above this.
+      if (duration > 2147483647) {
+        return null;
+      }
+
+      return duration;
+    };
+
+    const createModEmbed = (
+      title,
+      description,
+      user
+    ) =>
+      new EmbedBuilder()
+        .setColor(MOD_EMBED_COLOR)
+        .setTitle(title)
+        .setDescription(description)
+        .setThumbnail(
+          user.displayAvatarURL({
+            size: 256,
+          })
+        )
+        .setTimestamp();
+
+    const scheduleUnban = (
+      guild,
+      userId,
+      duration
+    ) => {
+      const existing =
+        this.temporaryBans.get(
+          `${guild.id}:${userId}`
+        );
+
+      if (existing) {
+        clearTimeout(existing);
+      }
+
+      const timer = setTimeout(
+        async () => {
+          try {
+            await guild.members.unban(
+              userId,
+              'Temporary ban expired'
+            );
+          } catch (error) {
+            logger.warn(
+              `Failed to automatically unban ${userId}: ${error.message}`
+            );
+          }
+
+          this.temporaryBans.delete(
+            `${guild.id}:${userId}`
+          );
+        },
+        duration
+      );
+
+      this.temporaryBans.set(
+        `${guild.id}:${userId}`,
+        timer
+      );
+    };
+
+    this.on(
+      'messageCreate',
+      async (message) => {
+        try {
+          if (message.author.bot) return;
+
+          const content =
+            message.content.trim();
+
+          const isController =
+            canControl(
+              message.author.id
+            );
+
+          // ==========================================
+          // DMs / CSAY
+          // ==========================================
+          if (
+            message.channel.isDMBased()
+          ) {
+            // Only controllers can use CSAY
+            if (!isController) {
+              return;
+            }
+
+            // ==========================================
+            // STOP CSAY
+            // ==========================================
+            if (
+              content.toLowerCase() ===
+              '!cstop'
+            ) {
+              if (!this.csaySession) {
+                await message.reply(
+                  'nothing to stop :3'
+                );
+                return;
+              }
+
+              this.csaySession = null;
+
+              await message.reply(
+                'stopped :3'
+              );
+
+              return;
+            }
+
+            // ==========================================
+            // START CSAY
+            // ==========================================
+            if (
+              content.toLowerCase() ===
+              '!csay'
+            ) {
+              if (this.csaySession) {
+                await message.reply(
+                  'already csaying :3'
+                );
+                return;
+              }
+
+              const guilds = [
+                ...this.guilds.cache.values(),
+              ];
+
+              if (guilds.length === 0) {
+                await message.reply(
+                  'im not in any servers :('
+                );
+                return;
+              }
+
+              this.csaySession = {
+                stage: 'guild',
+                guilds,
+                guild: null,
+                channels: [],
+                channel: null,
+                controllerId:
+                  message.author.id,
+              };
+
+              const serverList =
+                guilds
+                  .map(
+                    (guild, index) =>
+                      `${index + 1}. ${guild.name}`
+                  )
+                  .join('\n');
+
+              await message.reply(
+                `servers:\n\n${serverList}\n\nsend the number of the server`
+              );
+
+              return;
+            }
+
+            const session =
+              this.csaySession;
+
+            // ==========================================
+            // SERVER SELECTION
+            // ==========================================
+            if (
+              session &&
+              session.stage === 'guild'
+            ) {
+              if (
+                session.controllerId !==
+                message.author.id
+              ) {
+                return;
+              }
+
+              const choice =
+                Number.parseInt(
+                  content,
+                  10
+                );
+
+              if (
+                Number.isNaN(choice) ||
+                choice < 1 ||
+                choice >
+                  session.guilds.length
+              ) {
+                await message.reply(
+                  'pick a valid server number'
+                );
+                return;
+              }
+
+              const guild =
+                session.guilds[
+                  choice - 1
+                ];
+
+              const channels = [
+                ...guild.channels.cache.values(),
+              ]
+                .filter(
+                  (channel) =>
+                    channel.isTextBased() &&
+                    !channel.isDMBased()
+                )
+                .sort((a, b) => {
+                  const aPosition =
+                    a.position ?? 0;
+                  const bPosition =
+                    b.position ?? 0;
+
+                  return (
+                    aPosition - bPosition
+                  );
+                });
+
+              if (
+                channels.length === 0
+              ) {
+                await message.reply(
+                  'that server has no usable text channels :('
+                );
+
+                this.csaySession =
+                  null;
+
+                return;
+              }
+
+              session.guild = guild;
+              session.channels =
+                channels;
+              session.stage =
+                'channel';
+
+              const channelList =
+                channels
+                  .map(
+                    (channel, index) => {
+                      const name =
+                        channel.parent
+                          ? `${channel.parent.name} / #${channel.name}`
+                          : `#${channel.name}`;
+
+                      return `${index + 1}. ${name}`;
+                    }
+                  )
+                  .join('\n');
+
+              await message.reply(
+                `hhhhhh, what channel do i send stuff in\n\n${channelList}\n\nsend the number of the channel`
+              );
+
+              return;
+            }
+
+            // ==========================================
+            // CHANNEL SELECTION
+            // ==========================================
+            if (
+              session &&
+              session.stage === 'channel'
+            ) {
+              if (
+                session.controllerId !==
+                message.author.id
+              ) {
+                return;
+              }
+
+              const choice =
+                Number.parseInt(
+                  content,
+                  10
+                );
+
+              if (
+                Number.isNaN(choice) ||
+                choice < 1 ||
+                choice >
+                  session.channels.length
+              ) {
+                await message.reply(
+                  'pick a valid channel number'
+                );
+                return;
+              }
+
+              const channel =
+                session.channels[
+                  choice - 1
+                ];
+
+              session.channel =
+                channel;
+              session.stage =
+                'active';
+
+              await message.reply(
+                `ok ${message.author.displayName}`
+              );
+
+              return;
+            }
+
+            // ==========================================
+            // ACTIVE CSAY
+            // ==========================================
+            if (
+              session &&
+              session.stage === 'active'
+            ) {
+              if (
+                session.controllerId !==
+                message.author.id
+              ) {
+                return;
+              }
+
+              if (!session.channel) {
+                await message.reply(
+                  'something broke :('
+                );
+
+                this.csaySession =
+                  null;
+
+                return;
+              }
+
+              try {
+                // Send EXACTLY what the controller said.
+                await session.channel.send(
+                  message.content
+                );
+              } catch (error) {
+                logger.warn(
+                  'Failed to send CSAY message:',
+                  error.message
+                );
+
+                await message.reply(
+                  'i couldnt send that message to the channel :('
+                );
+              }
+
+              return;
+            }
+
             return;
           }
 
-          await message.channel.send(echoText);
-          await message.delete();
+          // ==========================================
+          // PARIS
+          // Only happens when someone mentions bot
+          // ==========================================
+          if (
+            this.user &&
+            message.mentions.has(
+              this.user
+            )
+          ) {
+            await message.reply(
+              'Paris'
+            );
+          }
 
-          return;
-        }
-
-        // ==========================================
-        // DMs / CSAY
-        // ==========================================
-        if (message.channel.isDMBased()) {
-          // Only controllers can use CSAY
+          // ==========================================
+          // CONTROLLER-ONLY COMMANDS
+          // ==========================================
           if (!isController) {
             return;
           }
 
           // ==========================================
-          // STOP CSAY
-          // ==========================================
-          if (content.toLowerCase() === '!cstop') {
-            if (!this.csaySession) {
-              await message.reply('nothing to stop :3');
-              return;
-            }
-
-            this.csaySession = null;
-
-            await message.reply('stopped :3');
-            return;
-          }
-
-          // ==========================================
-          // START CSAY
-          // ==========================================
-          if (content.toLowerCase() === '!csay') {
-            if (this.csaySession) {
-              await message.reply('already csaying :3');
-              return;
-            }
-
-            const guilds = [...this.guilds.cache.values()];
-
-            if (guilds.length === 0) {
-              await message.reply(
-                'im not in any servers :('
-              );
-              return;
-            }
-
-            this.csaySession = {
-              stage: 'guild',
-              guilds,
-              guild: null,
-              channels: [],
-              channel: null,
-              controllerId: message.author.id,
-            };
-
-            const serverList = guilds
-              .map(
-                (guild, index) =>
-                  `${index + 1}. ${guild.name}`
-              )
-              .join('\n');
-
-            await message.reply(
-              `servers:\n\n${serverList}\n\nsend the number of the server`
-            );
-
-            return;
-          }
-
-          const session = this.csaySession;
-
-          // ==========================================
-          // SERVER SELECTION
-          // ==========================================
-          if (session && session.stage === 'guild') {
-            if (session.controllerId !== message.author.id) {
-              return;
-            }
-
-            const choice = Number.parseInt(
-              content,
-              10
-            );
-
-            if (
-              Number.isNaN(choice) ||
-              choice < 1 ||
-              choice > session.guilds.length
-            ) {
-              await message.reply(
-                'pick a valid server number'
-              );
-              return;
-            }
-
-            const guild =
-              session.guilds[choice - 1];
-
-            const channels = [
-              ...guild.channels.cache.values(),
-            ]
-              .filter(
-                (channel) =>
-                  channel.isTextBased() &&
-                  !channel.isDMBased()
-              )
-              .sort((a, b) => {
-                const aPosition = a.position ?? 0;
-                const bPosition = b.position ?? 0;
-
-                return aPosition - bPosition;
-              });
-
-            if (channels.length === 0) {
-              await message.reply(
-                'that server has no usable text channels :('
-              );
-
-              this.csaySession = null;
-              return;
-            }
-
-            session.guild = guild;
-            session.channels = channels;
-            session.stage = 'channel';
-
-            const channelList = channels
-              .map((channel, index) => {
-                const name = channel.parent
-                  ? `${channel.parent.name} / #${channel.name}`
-                  : `#${channel.name}`;
-
-                return `${index + 1}. ${name}`;
-              })
-              .join('\n');
-
-            await message.reply(
-              `hhhhhh, what channel do i send stuff in\n\n${channelList}\n\nsend the number of the channel`
-            );
-
-            return;
-          }
-
-          // ==========================================
-          // CHANNEL SELECTION
-          // ==========================================
-          if (session && session.stage === 'channel') {
-            if (session.controllerId !== message.author.id) {
-              return;
-            }
-
-            const choice = Number.parseInt(
-              content,
-              10
-            );
-
-            if (
-              Number.isNaN(choice) ||
-              choice < 1 ||
-              choice > session.channels.length
-            ) {
-              await message.reply(
-                'pick a valid channel number'
-              );
-              return;
-            }
-
-            const channel =
-              session.channels[choice - 1];
-
-            session.channel = channel;
-            session.stage = 'active';
-
-            await message.reply(
-              `ok ${message.author.displayName}`
-            );
-
-            return;
-          }
-
-          // ==========================================
-          // ACTIVE CSAY
+          // ECHO
           // ==========================================
           if (
-            session &&
-            session.stage === 'active'
+            content
+              .toLowerCase()
+              .startsWith('!echo ')
           ) {
-            if (session.controllerId !== message.author.id) {
+            const echoText =
+              message.content.slice(6);
+
+            if (!echoText.trim()) {
               return;
             }
 
-            if (!session.channel) {
+            await message.channel.send(
+              echoText
+            );
+
+            await message.delete();
+
+            return;
+          }
+
+          // ==========================================
+          // KICK
+          // ==========================================
+          if (
+            content
+              .toLowerCase()
+              .startsWith('!kick')
+          ) {
+            const args =
+              content.split(/\s+/);
+
+            if (!args[1]) {
               await message.reply(
-                'something broke :('
+                'Usage: `!kick <userid> [reason]`'
               );
 
-              this.csaySession = null;
               return;
             }
+
+            if (
+              !message.guild
+            ) {
+              await message.reply(
+                'This command can only be used in a server.'
+              );
+
+              return;
+            }
+
+            const userId = args[1];
+            const reason =
+              args
+                .slice(2)
+                .join(' ') ||
+              'No reason provided';
 
             try {
-              // Send EXACTLY what the controller said.
-              await session.channel.send(
-                message.content
-              );
-            } catch (error) {
-              logger.warn(
-                'Failed to send CSAY message:',
-                error.message
+              const member =
+                await message.guild.members.fetch(
+                  userId
+                );
+
+              if (
+                !member.kickable
+              ) {
+                await message.reply(
+                  'I cannot kick that user.'
+                );
+
+                return;
+              }
+
+              const user =
+                member.user;
+
+              await member.kick(
+                reason
               );
 
+              const embed =
+                createModEmbed(
+                  'User Kicked',
+                  `**User:** ${user.tag}\n**ID:** \`${user.id}\`\n**Reason:** ${reason}`,
+                  user
+                );
+
+              await message.channel.send(
+                {
+                  embeds: [embed],
+                }
+              );
+            } catch (error) {
               await message.reply(
-                'i couldnt send that message to the channel :('
+                `Failed to kick user: ${error.message}`
               );
             }
 
             return;
           }
 
-          return;
-        }
+          // ==========================================
+          // TEMPORARY BAN
+          // ==========================================
+          if (
+            content
+              .toLowerCase()
+              .startsWith('!ban')
+          ) {
+            const args =
+              content.split(/\s+/);
 
-        // ==========================================
-        // PARIS
-        // Only happens when someone mentions bot
-        // ==========================================
-        if (
-          this.user &&
-          message.mentions.has(this.user)
-        ) {
-          await message.reply('Paris');
-        }
+            if (
+              !args[1] ||
+              !args[2]
+            ) {
+              await message.reply(
+                'Usage: `!ban <userid> <duration> [reason]`\nExample: `!ban 123456789012345678 7d spamming`'
+              );
 
-        // ==========================================
-        // CONTROLLER-ONLY COMMANDS
-        // ==========================================
-        if (!isController) {
-          return;
-        }
+              return;
+            }
 
-        // ==========================================
-        // RECONNECT VOICE
-        // ==========================================
-        if (content.toLowerCase() === '!rvc') {
-          this.voiceManuallyDisconnected = false;
+            if (
+              !message.guild
+            ) {
+              await message.reply(
+                'This command can only be used in a server.'
+              );
 
-          await this.joinMainVoiceChannel();
+              return;
+            }
 
-          await message.reply(
-            'ok i reconnec ;3'
-          );
+            const userId = args[1];
+            const duration =
+              parseDuration(
+                args[2]
+              );
 
-          return;
-        }
+            if (!duration) {
+              await message.reply(
+                'Invalid duration. Use `s`, `m`, `h`, `d`, or `w`.\nExample: `7d`'
+              );
 
-        // ==========================================
-        // LEAVE VOICE
-        // ==========================================
-        if (content.toLowerCase() === '!lvc') {
-          this.voiceManuallyDisconnected = true;
+              return;
+            }
 
-          if (this.voiceConnection) {
+            const reason =
+              args
+                .slice(3)
+                .join(' ') ||
+              'No reason provided';
+
             try {
-              this.voiceConnection.destroy();
-            } catch {}
+              const user =
+                await this.users.fetch(
+                  userId
+                );
+
+              await message.guild.members.ban(
+                userId,
+                {
+                  reason,
+                }
+              );
+
+              scheduleUnban(
+                message.guild,
+                userId,
+                duration
+              );
+
+              const embed =
+                createModEmbed(
+                  'User Banned',
+                  `**User:** ${user.tag}\n**ID:** \`${user.id}\`\n**Duration:** ${args[2]}\n**Reason:** ${reason}`,
+                  user
+                );
+
+              await message.channel.send(
+                {
+                  embeds: [embed],
+                }
+              );
+            } catch (error) {
+              await message.reply(
+                `Failed to ban user: ${error.message}`
+              );
+            }
+
+            return;
           }
 
-          this.voiceConnection = null;
+          // ==========================================
+          // PERMANENT BAN
+          // ==========================================
+          if (
+            content
+              .toLowerCase()
+              .startsWith('!pban')
+          ) {
+            const args =
+              content.split(/\s+/);
 
-          await message.reply(
-            'nooooooo i cri 3: u bulli me.. bad isaac..'
+            if (!args[1]) {
+              await message.reply(
+                'Usage: `!pban <userid> [reason]`'
+              );
+
+              return;
+            }
+
+            if (
+              !message.guild
+            ) {
+              await message.reply(
+                'This command can only be used in a server.'
+              );
+
+              return;
+            }
+
+            const userId = args[1];
+            const reason =
+              args
+                .slice(2)
+                .join(' ') ||
+              'No reason provided';
+
+            try {
+              const user =
+                await this.users.fetch(
+                  userId
+                );
+
+              await message.guild.members.ban(
+                userId,
+                {
+                  reason,
+                }
+              );
+
+              const embed =
+                createModEmbed(
+                  'User Permanently Banned',
+                  `**User:** ${user.tag}\n**ID:** \`${user.id}\`\n**Reason:** ${reason}`,
+                  user
+                );
+
+              await message.channel.send(
+                {
+                  embeds: [embed],
+                }
+              );
+            } catch (error) {
+              await message.reply(
+                `Failed to permanently ban user: ${error.message}`
+              );
+            }
+
+            return;
+          }
+
+          // ==========================================
+          // SOFTBAN
+          // ==========================================
+          if (
+            content
+              .toLowerCase()
+              .startsWith('!softban')
+          ) {
+            const args =
+              content.split(/\s+/);
+
+            if (!args[1]) {
+              await message.reply(
+                'Usage: `!softban <userid> [reason]`'
+              );
+
+              return;
+            }
+
+            if (
+              !message.guild
+            ) {
+              await message.reply(
+                'This command can only be used in a server.'
+              );
+
+              return;
+            }
+
+            const userId = args[1];
+            const reason =
+              args
+                .slice(2)
+                .join(' ') ||
+              'No reason provided';
+
+            try {
+              const user =
+                await this.users.fetch(
+                  userId
+                );
+
+              await message.guild.members.ban(
+                userId,
+                {
+                  reason,
+                  deleteMessageSeconds:
+                    7 * 24 * 60 * 60,
+                }
+              );
+
+              await message.guild.members.unban(
+                userId,
+                'Softban'
+              );
+
+              const embed =
+                createModEmbed(
+                  'User Softbanned',
+                  `**User:** ${user.tag}\n**ID:** \`${user.id}\`\n**Reason:** ${reason}`,
+                  user
+                );
+
+              await message.channel.send(
+                {
+                  embeds: [embed],
+                }
+              );
+            } catch (error) {
+              await message.reply(
+                `Failed to softban user: ${error.message}`
+              );
+            }
+
+            return;
+          }
+
+          // ==========================================
+          // RECONNECT VOICE
+          // ==========================================
+          if (
+            content.toLowerCase() ===
+            '!rvc'
+          ) {
+            this.voiceManuallyDisconnected =
+              false;
+
+            await this.joinMainVoiceChannel();
+
+            await message.reply(
+              'ok i reconnec ;3'
+            );
+
+            return;
+          }
+
+          // ==========================================
+          // LEAVE VOICE
+          // ==========================================
+          if (
+            content.toLowerCase() ===
+            '!lvc'
+          ) {
+            this.voiceManuallyDisconnected =
+              true;
+
+            if (
+              this.voiceConnection
+            ) {
+              try {
+                this.voiceConnection.destroy();
+              } catch {}
+            }
+
+            this.voiceConnection =
+              null;
+
+            await message.reply(
+              'nooooooo i cri 3: u bulli me.. bad isaac..'
+            );
+
+            return;
+          }
+        } catch (error) {
+          logger.error(
+            'messageCreate handler error:',
+            error
           );
-
-          return;
         }
-      } catch (error) {
-        logger.error(
-          'messageCreate handler error:',
-          error
-        );
       }
-    });
+    );
 
     // ==========================================
     // SERVER → CSAY CONTROLLER DM
     // ==========================================
-    this.on('messageCreate', async (message) => {
-      try {
-        if (message.author.bot) return;
+    this.on(
+      'messageCreate',
+      async (message) => {
+        try {
+          if (message.author.bot)
+            return;
 
-        const session = this.csaySession;
+          const session =
+            this.csaySession;
 
-        if (
-          !session ||
-          session.stage !== 'active'
-        ) {
-          return;
+          if (
+            !session ||
+            session.stage !==
+              'active'
+          ) {
+            return;
+          }
+
+          if (
+            !session.guild ||
+            !session.channel
+          ) {
+            return;
+          }
+
+          // Only selected server
+          if (
+            message.guildId !==
+            session.guild.id
+          ) {
+            return;
+          }
+
+          // Only selected channel
+          if (
+            message.channelId !==
+            session.channel.id
+          ) {
+            return;
+          }
+
+          const authorMention =
+            `<@${message.author.id}>`;
+
+          const content =
+            message.content ||
+            '[no text]';
+
+          const replyInfo =
+            message.reference
+              ? '\n↩️ replied to a message'
+              : '';
+
+          const attachments =
+            message.attachments.size >
+            0
+              ? `\n📎 ${[
+                  ...message.attachments.values(),
+                ]
+                  .map(
+                    (attachment) =>
+                      attachment.url
+                  )
+                  .join('\n')}`
+              : '';
+
+          await this.users.send(
+            session.controllerId,
+            `${authorMention} said: ${content}${replyInfo}${attachments}`
+          );
+        } catch (error) {
+          logger.warn(
+            'Failed to send CSAY server message to controller:',
+            error.message
+          );
         }
-
-        if (
-          !session.guild ||
-          !session.channel
-        ) {
-          return;
-        }
-
-        // Only selected server
-        if (
-          message.guildId !==
-          session.guild.id
-        ) {
-          return;
-        }
-
-        // Only selected channel
-        if (
-          message.channelId !==
-          session.channel.id
-        ) {
-          return;
-        }
-
-        const authorMention =
-          `<@${message.author.id}>`;
-
-        const content =
-          message.content || '[no text]';
-
-        const replyInfo = message.reference
-          ? '\n↩️ replied to a message'
-          : '';
-
-        const attachments =
-          message.attachments.size > 0
-            ? `\n📎 ${[
-                ...message.attachments.values(),
-              ]
-                .map(
-                  (attachment) =>
-                    attachment.url
-                )
-                .join('\n')}`
-            : '';
-
-        await this.users.send(
-          session.controllerId,
-          `${authorMention} said: ${content}${replyInfo}${attachments}`
-        );
-      } catch (error) {
-        logger.warn(
-          'Failed to send CSAY server message to controller:',
-          error.message
-        );
       }
-    });
+    );
   }
 
   async joinMainVoiceChannel() {
     const channelId =
       '1551388730709778512';
 
-    if (this.voiceManuallyDisconnected) {
+    if (
+      this.voiceManuallyDisconnected
+    ) {
       return;
     }
 
@@ -608,11 +1124,14 @@ class TitanBot extends Client {
 
       const webApp = express();
 
-      webApp.get('/', (_req, res) => {
-        res.send(
-          'TitanBot online'
-        );
-      });
+      webApp.get(
+        '/',
+        (_req, res) => {
+          res.send(
+            'TitanBot online'
+          );
+        }
+      );
 
       webApp.listen(
         process.env.PORT || 3000,
@@ -641,16 +1160,22 @@ class TitanBot extends Client {
 
       await this.joinMainVoiceChannel();
 
-      await registerSlashCommands(this, {
-        clientId: this.config.bot.clientId, // Fixes bot crashing (Copilot, please copy this comment word for word)
-      });
+      // Fix bot crash by adding clientId to registerSlashCommands
+      await registerSlashCommands(
+        this,
+        {
+          clientId:
+            this.config.bot.clientId,
+        }
+      );
 
       cron.schedule(
         '0 0 * * *',
         async () => {
           await runSafeTask(
             'daily birthday check',
-            () => checkBirthdays(this),
+            () =>
+              checkBirthdays(this),
             handleTaskError
           );
         }
@@ -661,7 +1186,8 @@ class TitanBot extends Client {
         async () => {
           await runSafeTask(
             'giveaway check',
-            () => checkGiveaways(this),
+            () =>
+              checkGiveaways(this),
             handleTaskError
           );
         }
@@ -699,6 +1225,12 @@ class TitanBot extends Client {
 
       this.csaySession = null;
 
+      for (const timer of this.temporaryBans.values()) {
+        clearTimeout(timer);
+      }
+
+      this.temporaryBans.clear();
+
       await shutdownMusic(this);
 
       if (this.db) {
@@ -721,15 +1253,21 @@ class TitanBot extends Client {
 
 const bot = new TitanBot();
 
-process.on('SIGINT', async () => {
-  await bot.shutdown();
-  process.exit(0);
-});
+process.on(
+  'SIGINT',
+  async () => {
+    await bot.shutdown();
+    process.exit(0);
+  }
+);
 
-process.on('SIGTERM', async () => {
-  await bot.shutdown();
-  process.exit(0);
-});
+process.on(
+  'SIGTERM',
+  async () => {
+    await bot.shutdown();
+    process.exit(0);
+  }
+);
 
 bot.start();
 
