@@ -69,7 +69,7 @@ class TitanBot extends Client {
       if (message.author.id !== '1542873926173069496') return;
 
       // Reconnect to the configured voice channel
-      if (message.content.trim() === '!reconnectvc') {
+      if (message.content.trim() === '!rvc') {
         this.voiceManuallyDisconnected = false;
 
         await this.joinMainVoiceChannel();
@@ -78,7 +78,7 @@ class TitanBot extends Client {
       }
 
       // Leave the voice channel and stay disconnected
-      if (message.content.trim() === '!shoo') {
+      if (message.content.trim() === '!lvc') {
         this.voiceManuallyDisconnected = true;
 
         if (this.voiceConnection) {
@@ -91,7 +91,7 @@ class TitanBot extends Client {
           this.voiceConnection = null;
         }
 
-        message.reply('nooooooo i cri 3:');
+        message.reply('nooooooo i cri 3: u bulli me.. bad isaac..');
       }
     });
   }
