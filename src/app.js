@@ -1,6 +1,11 @@
 import 'dotenv/config';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
+import {
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+  entersState,
+} from '@discordjs/voice';
 import express from 'express';
 import cron from 'node-cron';
 
@@ -57,6 +62,67 @@ class TitanBot extends Client {
     });
   }
 
+  async joinMainVoiceChannel() {
+    const channelId = '1551388730709778512';
+
+    try {
+      const channel = await this.channels.fetch(channelId);
+
+      if (!channel || !channel.isVoiceBased()) {
+        logger.error(`Voice channel ${channelId} was not found or is not a voice channel.`);
+        return;
+      }
+
+      const connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: channel.guild.id,
+        adapterCreator: channel.guild.voiceAdapterCreator,
+        selfDeaf: true,
+        selfMute: true,
+      });
+
+      this.voiceConnection = connection;
+
+      connection.on(VoiceConnectionStatus.Ready, () => {
+        startupLog(`✅ Joined voice channel: ${channel.name}`);
+      });
+
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        logger.warn('⚠️ Voice connection disconnected. Attempting to reconnect...');
+
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+        } catch {
+          logger.warn('Voice connection could not recover. Rejoining voice channel...');
+
+          connection.destroy();
+
+          setTimeout(() => {
+            this.joinMainVoiceChannel();
+          }, 2_000);
+        }
+      });
+
+      connection.on(VoiceConnectionStatus.Destroyed, () => {
+        logger.warn('⚠️ Voice connection destroyed. Rejoining...');
+
+        setTimeout(() => {
+          this.joinMainVoiceChannel();
+        }, 2_000);
+      });
+
+    } catch (error) {
+      logger.error('Failed to join voice channel:', error);
+
+      setTimeout(() => {
+        this.joinMainVoiceChannel();
+      }, 5_000);
+    }
+  }
+
   async start() {
     try {
       startupLog('Starting TitanBot...');
@@ -98,6 +164,8 @@ class TitanBot extends Client {
       startupLog('Logging into Discord...');
       await this.login(this.config.bot.token);
       startupLog('Discord login successful');
+
+      await this.joinMainVoiceChannel();
       
       startupLog('Registering slash commands globally...');
       await this.registerCommands();
@@ -438,4 +506,3 @@ try {
 }
 
 export default TitanBot;
-
